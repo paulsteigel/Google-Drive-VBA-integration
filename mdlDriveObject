@@ -1,0 +1,93 @@
+Option Explicit
+Public Declare Sub Sleep Lib "kernel32.dll" (ByVal dwMilliseconds As Long)
+
+Private Type LabelAttributes
+    hidden As Boolean
+    trashed As Boolean
+End Type
+
+Private Type ParentsAttributes
+    id As String
+    isRoot As Boolean
+End Type
+
+Private Type FileAttributes
+    id As String
+    title As String
+    mimeType As String
+    labels As LabelAttributes
+    createdDate As Date
+    parents As ParentsAttributes
+    originalFilename As String
+    fileExtension As String
+    md5Checksum As String
+    fileSize As Long
+    ownerNames As String
+End Type
+
+Public Sub ShowMyForm()
+    'frmDemo.Show
+End Sub
+
+Public Sub ShowFiles()
+    Dim timer As Double
+    timer = Now()
+    Json_ScriptingControl
+    timer = Now() - timer
+    AppStatus "App finished in " & timer  'Format(timer, "SS")
+End Sub
+
+Public Sub ParseJSon2Table()
+    Dim timer As Double
+    timer = Now()
+    'JSon2Table
+    timer = Now() - timer
+    AppStatus "App finished in " & timer 'Format(timer, "SS")
+End Sub
+
+Sub Json_ScriptingControl()
+    Dim JsonScript As New clsJSONScript
+    Dim jsObj As Object, jSonTxt As String
+    Dim i, myArr As Variant
+    With JsonScript
+        Set jsObj = .DecodeJsonString(RetrieveGdriveList(GetAuthCode))
+        myArr = .JsonArray
+    End With
+    Set JsonScript = Nothing
+End Sub
+
+Function RetrieveGdriveList(Token As String, Optional ParentID As String = "", Optional GetAllItem As Boolean = False) As String
+    Dim urls As String, filterStr As String, respTxt As String
+    urls = "https://www.googleapis.com/drive/v2/files"
+    
+    If ParentID <> "" Then
+        'urls = urls + "/" + ParentID + "/children?"
+        urls = urls + "?q='" + ParentID + "' in parents and trashed=false"
+    Else
+        urls = urls + "?q='root' in parents and trashed=false"
+    End If
+    If Not GetAllItem Then urls = urls + " and mimeType='application/vnd.google-apps.folder'"
+    
+    filterStr = "&fields=items(createdDate,description,fileExtension,fileSize,id,labels(hidden,trashed),md5Checksum,mimeType,originalFilename,ownerNames,parents(id,isRoot),properties(value,visibility),title)"
+    ''GET https://www.googleapis.com/drive/v2/files?q='root'+in+parents+and+mimeType%3D'application%2Fvnd.google-apps.folder'&fields=items(fileExtension%2CfileSize%2Cid%2Clabels%2Fhidden%2CmimeType%2Ctitle)
+    
+    Dim Xhr As Object
+    Set Xhr = CreateObject("MSXML2.ServerXMLHTTP")
+    With Xhr
+        .Open "GET", urls & filterStr
+        .SetRequestHeader "Authorization", Token
+        .SetRequestHeader "Content-Type", "application/x-www-form-urlencoded"
+        '.Send (Utf8BytesFromString("'q'='root' in parents and trashed=false"))
+        .Send
+        respTxt = .ResponseText
+        If .Status <> 200 Then
+            '// Error getting OAuth2 token
+            'err.Raise vbObjectError + .Status, Description:="Failed to retrieve data " & .Status & ": " & .ResponseText
+            'WriteLog respTxt
+        End If
+        RetrieveGdriveList = respTxt
+    End With
+ErrHandler:
+    Err.clear
+    Set Xhr = Nothing
+End Function
