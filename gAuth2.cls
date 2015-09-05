@@ -6,7 +6,8 @@
 '
 ' Inspired loosely by Tim Halls authentication classes in his Excel-Rest library:
 ' https://github.com/timhall/Excel-REST
-'
+' modified by Dang Dinh Ngoc with inclusion of WinhttpRequest protocol on replacement of InternetExplorer
+' Vietnam 2015
 '
 ' Features:
 '     Simple class to handle Google OAuth 2.0 Authentication
@@ -35,6 +36,12 @@ Private Enum AuthenticationStatus
     Authenticated = 3
 End Enum
 
+Private Enum HtmlElementType
+    ById = 0
+    ByName = 1
+    ByClassName = 2
+    ByTagName = 3
+End Enum
 
 '// Application Client ID and Application Secret
 Private strClientId As String
@@ -70,10 +77,6 @@ Private Const READYSTATE_COMPLETE = 4
 Private Const PAGE_LOADED = 4
 Private Xhr As Object
 Private LogonCookie As Variant
-Private Const VbAgent = "Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; WOW64; Trident/5.0)" '"Cig_manager"
-
-'Private Const WinHttpRequestOption_EnableRedirects = 6
-'Private Const WinHttpRequestOption_EnableHttpsToHttpRedirects = 12
 
 '// Since we are persisting the credentials to the registry, we need to read these in each time the class
 '// is initialized, if they aren't found - these will be default values, "" for strings and 1900/01/01 for te date
@@ -146,35 +149,27 @@ Function LoginGoogle(gAccountName As String, gPassword As String) As Boolean
     GetWebConnector True
     
     Set oHttp = Xhr
-    Dim htmlDoc As Object, Galx As Object
-    Set htmlDoc = CreateObject("HtmlFile")
     Dim Cookie As Variant, UserDetails As String
     
     With oHttp
         ' Log out all first
         .Open "POST", google_accounts_logout, False
         .Send
-        RaiseEvent StatusChanged("Log out all...")
+        RaiseEvent StatusChanged(Msg("MSG_LOG_OUT_ALL_ACCOUNTS"))
         
         If .Status <> 200 Then GoTo Exit_Sub
-        
-        
-        ' get returned text to a HtmlObject for easy reading...
-        htmlDoc.Write .ResponseText
-        htmlDoc.Close
         
         ' now release a get request
         .Open "GET", google_accounts_url, False
         .Send
-        RaiseEvent StatusChanged("Sent request for logging in...")
+        RaiseEvent StatusChanged(Msg("MSG_SEND_REQUEST_FOR_LOGGING_IN"))
         
         If .Status <> 200 Then GoTo Exit_Sub
         
         'Debug.Print .getAllResponseHeaders()
         'Cookie = Split(.getResponseHeader("Set-Cookie"), ";")
-        Set Galx = htmlDoc.getElementsByName("GALX")
         
-        d = "&GALX=" + Galx(0).Value
+        d = "&GALX=" + GetResponseData(.ResponseText, "GALX", , 0)
         d = d + "&continue=https://www.google.com/?gws_rd=ssl&hl=en&_utf8=?"
         d = d + "&bgresponse=js_disabled&pstMsg=1&dnConn=&checkConnection=youtube:206:1"
         d = d + "&checkedDomains=youtube"
@@ -196,45 +191,85 @@ Function LoginGoogle(gAccountName As String, gPassword As String) As Boolean
         .SetRequestHeader "Content-Length", Len(d)
         
         .Send (Utf8BytesFromString(d))
-        RaiseEvent StatusChanged("Submited request for logging in...")
+        RaiseEvent StatusChanged(Msg("MSG_SUBMITTED_USER_DATA"))
         
         If .Status <> 200 Then GoTo Exit_Sub
         
         'WriteLog .ResponseText, "C:\Logged_account.html", True
         
-        ' Keep cookie for next step
-        'Debug.Print .getAllResponseHeaders()
-        LogonCookie = .getResponseHeader("Set-Cookie")
-        
-        ' let surf the gmail
-        .Open "GET", gmailUrl, False
-        .Send
-        If .Status <> 200 Then GoTo Exit_Sub
-        
-        
-        'WriteLog .ResponseText, "C:\Gmail.html", True
-        
-        If InStr(.ResponseText, gmailUrl) <> 0 Then
-            LoginGoogle = True
-            RaiseEvent StatusChanged("Successfully logged in...")
+        ' now check for logiing in
+        d = GetResponseData(.ResponseText, "gaia_loginform", "action", 0)
+        If d = "" Then
+            If GetResponseData(.ResponseText, "title", , 3) = "Google Accounts" Or InStr(.ResponseText, gAccountName) > 0 Then
+                RaiseEvent StatusChanged(Msg("MSG_LOGGED_IN"))
+                LoginGoogle = True
+                GoTo Exit_Sub
+            End If
+        Else
+            ' Check for what was the message
+            d = GetResponseData(.ResponseText, "errormsg_0_Email", , 0, True)
+            If d <> "" Then GoTo Exit_With_Error
+            ' password or email problem
+            d = GetResponseData(.ResponseText, "errormsg_0_Passwd", "innerHtml", 0, True)
         End If
     End With
+Exit_With_Error:
+    RaiseEvent StatusChanged(Msg("MSG_LOG_IN_FAILED") + " [" + d + "]")
 Exit_Sub:
-    Set htmlDoc = Nothing
+End Function
 
+Private Function GetResponseData(ResponseText As String, ItemID As String, _
+    Optional PropertyType As String = "value", Optional ItemType As HtmlElementType = 0, _
+    Optional GetFirstChildElement As Boolean = False)
+    ' This function will check whether the surfing was successfully or not?
+    Dim htmlDoc As Object, FindElement As Object, tmpObj As String
+    Set htmlDoc = CreateObject("HtmlFile")
+    
+    ' Load the html object
+    htmlDoc.Write ResponseText
+    htmlDoc.Close
+
+    With htmlDoc
+        Select Case ItemType
+        Case 0: ' by id
+            Set FindElement = .getElementById(ItemID)
+        Case 1: ' by name
+        Case 2: ' by class
+            Set FindElement = .getElementsByClassName(ItemID)
+        Case 3: ' by TagName
+            ' jst dont know why every time using by tagname IE show up
+            GetResponseData = htmlDoc.title
+            'Set FindElement = .getElementsByTagName(ItemID)
+        End Select
+    End With
+    If FindElement Is Nothing Then
+        ' not existent - succesffully or mightbe not
+    Else
+        On Error Resume Next
+        ' first - try to get its property if we can
+        GetResponseData = FindElement.getAttribute(PropertyType)
+        If GetFirstChildElement Then
+            If FindElement.hasChildNodes Then
+                GetResponseData = FindElement.firstChild.getAttribute(PropertyType)
+                While FindElement.children.Length >= 1
+                    FindElement.removeChild (FindElement.lastChild)
+                Wend
+                If FindElement.getAttribute(PropertyType) <> "" Then GetResponseData = FindElement.getAttribute(PropertyType)
+            End If
+        End If
+    End If
+    If Err.Number <> 0 Then Err.clear
+    Set htmlDoc = Nothing
 End Function
 
 Sub LogOnGoogle(gAccount As String, gPassword As String)
-    'On Error Resume Next
-    
-     GetWebConnector
+    GetWebConnector
     
     ' Log out all first
-    RaiseEvent StatusChanged("Log out all...")
+    RaiseEvent StatusChanged(Msg("MSG_LOG_OUT_ALL_ACCOUNTS"))
     SurfAndWait oIExplorer, "https://accounts.google.com/Logout?service=accountsettings"
         
     'Browse to service login
-    RaiseEvent StatusChanged("Process logging...")
     SurfAndWait oIExplorer, "https://accounts.google.com/ServiceLogin"
         
     If ElementAvaiable(oIExplorer, "account-chooser-add-account") Then
@@ -243,7 +278,6 @@ Sub LogOnGoogle(gAccount As String, gPassword As String)
         SurfAndWait oIExplorer, , True
     End If
     
-    RaiseEvent StatusChanged("Auto setting of logging on parameter...")
     
     'Check for type of loging system
     With oIExplorer
@@ -260,7 +294,7 @@ Sub LogOnGoogle(gAccount As String, gPassword As String)
         ' submit and wait
         Call oIExplorer.Document.all.gaia_loginform.submit
     End With
-    RaiseEvent StatusChanged("Log on Google successfully...")
+    RaiseEvent StatusChanged(Msg("MSG_LOGGED_IN"))
     SurfAndWait oIExplorer, , True
 End Sub
 
@@ -296,9 +330,6 @@ Function GetAuthorisationCode(url As String) As String
     Dim oDOM As Object, frmAction As Object
     Dim ApproveUrl As String, d As String, i As Long, Cookie As Variant
     Dim tmpStr As String, xPos1 As Long, xPos2 As Long
-    Dim TagObj As Object
-    
-    Set oDOM = CreateObject("HtmlFile")
     
     With Xhr
         ' Navigate the consent windows
@@ -306,18 +337,11 @@ Function GetAuthorisationCode(url As String) As String
         .Send
         If .Status <> 200 Then GoTo Exit_Sub
         
-        ' for cookie things// we might not need this
-        'Cookie = Split(LogonCookie, ";")
-        ' get returned text to a HtmlObject for easy reading...
-        oDOM.Write .ResponseText
-        oDOM.Close
-  
-        Set TagObj = oDOM.getElementById("connect-approve")
-        ApproveUrl = TagObj.action
-        Set TagObj = oDOM.getElementById("state_wrapper")
+        ' Get the submited address
+        ApproveUrl = GetResponseData(.ResponseText, "connect-approve", "action")
         
         d = "&bgresponse=''&_utf8=" + ChrW(9731)
-        d = d + "&state_wrapper=" + TagObj.Value
+        d = d + "&state_wrapper=" + GetResponseData(.ResponseText, "state_wrapper")
         d = d + "&submit_access=true"
         d = d + "&valuenow=true"
         
@@ -339,15 +363,9 @@ Function GetAuthorisationCode(url As String) As String
         .Send (Utf8BytesFromString(d))
                 
         If .Status <> 200 Then GoTo Exit_Sub
-        RaiseEvent StatusChanged("Getting authorisation code...")
-        
-        oDOM.Write .ResponseText
-        oDOM.Close
-        Set TagObj = oDOM.getElementById("code")
+        GetAuthorisationCode = GetResponseData(.ResponseText, "code")
+        RaiseEvent StatusChanged(Msg("MSG_GOT_THE_CODE"))
     End With
-    If Not TagObj Is Nothing Then
-        GetAuthorisationCode = TagObj.Value
-    End If
 Exit_Sub:
     Set oDOM = Nothing
 End Function
@@ -379,17 +397,15 @@ Function GetNewToken() As Boolean
         .SetRequestHeader "Content-Type", "application/x-www-form-urlencoded"
         .Send CreateTokenRequest()
 
-        If .Status <> 200 Then
-            '// Error getting OAuth2 token
-            Err.Raise vbObjectError + .Status, _
-                Description:="Failed to retrieve OAuth2 Token - " & .Status & ": " & .ResponseText
-        End If
+        If .Status <> 200 Then Exit Function
         
         '// Get the credentials from the response
         strToken = GetProp("access_token", .ResponseText)
         strRefreshToken = GetProp("refresh_token")
         dtExpiresWhen = DateAdd("s", CLng(GetProp("expires_in")), Now())
     End With
+    
+    RaiseEvent StatusChanged(Msg("MSG_TOKEN_RENEWED"))
     
     '// Persist the Refresh key and expiry - the above should only ever need running once per application
     SaveSetting "GoogleAuth", "Tokens", "RefreshKey", strRefreshToken
@@ -398,7 +414,7 @@ Function GetNewToken() As Boolean
     GetNewToken = True
 End Function
 
-Sub RefreshToken()
+Function RefreshToken() As Boolean
     GetWebConnector True
     Dim url As String
     url = CreateRefreshRequest()
@@ -406,21 +422,19 @@ Sub RefreshToken()
         .Open "POST", strTokenUrl, False
         .SetRequestHeader "Content-Type", "application/x-www-form-urlencoded"
         .Send url
-        If .Status <> 200 Then
-            '// Error getting OAuth2 token
-            Err.Raise vbObjectError + .Status, _
-                Description:="Failed to retrieve OAuth2 Token - " & .Status & ": " & .ResponseText
-        End If
+        If .Status <> 200 Then Exit Function
         
         '// Get the credentials from the response
         strToken = GetProp("access_token", .ResponseText)
         dtExpiresWhen = DateAdd("s", CLng(GetProp("expires_in")), Now())
     End With
-    
+    RaiseEvent StatusChanged(Msg("MSG_TOKEN_REFRESHED"))
+    RefreshToken = True
     '// Persist new token in registry
+    SaveSetting "GoogleAuth", "Tokens", "RefreshKey", strRefreshToken
     SaveSetting "GoogleAuth", "Tokens", "Token", strToken
     SaveSetting "GoogleAuth", "Tokens", "TokenExpiry", CStr(dtExpiresWhen)
-End Sub
+End Function
 
 '// Simple function that gets a propery from a single depth JSON formatted string
 '// Requires the property name
@@ -498,7 +512,6 @@ End Function
 '//===========================================================================================================
 '// Event handling for Internet Explorer Object
 '// OAuth 2.0 Process flow requires a user to provide access through the browser for initial Authentication
-
 '//Check the title Window, if Success or Denied Found End the IE interaction
 Property Get BrowserComplete() As Boolean
     ' Try to wait until ie is completed processing
@@ -507,7 +520,7 @@ Property Get BrowserComplete() As Boolean
     theText = oIExplorer.Document.title
     If InStr(1, theText, "Success") > 0 Then
         strAuthCode = oIExplorer.Document.getElementById("code").Value
-        RaiseEvent StatusChanged("Quit Internet Explorer...")
+        RaiseEvent StatusChanged(Msg("MSG_QUIT_IEXPLORER"))
         oIExplorer.Quit
     ElseIf InStr(1, theText, "Denied") > 0 Then
         oIExplorer.Quit
@@ -515,7 +528,7 @@ Property Get BrowserComplete() As Boolean
         '// Click a button then
         ClickButton oIExplorer, "submit_approve_access"
         BrowserComplete = False
-        RaiseEvent StatusChanged("Authorisation code retrieved...")
+        RaiseEvent StatusChanged(Msg("MSG_GOT_THE_CODE"))
     End If
 End Property
 
@@ -580,24 +593,4 @@ ErrHandler:
         .Resizable = False
         .Visible = False
     End With
-End Sub
-
-Private Sub KillAllIeObject()
-    Dim oServ As Object
-    Dim cProc As Variant
-    Dim oProc As Object
-    Dim errReturnCode
-    
-    Set oServ = GetObject("winmgmts:")
-    Set cProc = oServ.ExecQuery("Select * from Win32_Process")
-    
-    For Each oProc In cProc
-    
-        'Rename EXCEL.EXE in the line below with the process that you need to Terminate.
-        'NOTE: It is 'case sensitive
-    
-        If (oProc.name) = "iexplore.exe" Then errReturnCode = oProc.Terminate()
-    Next
-    Set oServ = Nothing
-    Set cProc = Nothing
 End Sub
