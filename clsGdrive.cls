@@ -70,7 +70,7 @@ Function SimpleUpload(FileName As String) As Boolean
             '// Error getting OAuth2 token
             'err.Raise vbObjectError + .Status, Description:="Failed to retrieve data " + .Status & ": " + .ResponseText
             SimpleUpload = False
-            Debug.Print .ResponseText
+            'Debug.Print .ResponseText
             GoTo ErrHandler
         End If
     End With
@@ -165,7 +165,7 @@ Private Function InsertFile(FileName As String, Optional ByVal bAsync As Boolean
         .Send (body)
         If .Status <> 200 Then
             '// Error getting OAuth2 token
-            Debug.Print .ResponseText
+            'Debug.Print .ResponseText
         End If
         If Not bAsync Then
             InsertFile = .ResponseText
@@ -180,6 +180,7 @@ Private Function pvPostFile(sFileName As String, Optional ByVal bAsync As Boolea
     Dim baBuffer()      As Byte
     Dim sPostData       As String
     Dim sUrl As String, Token As String, Xhr As Object
+    ' multipart posting of file does not work as expected
     sUrl = "https://www.googleapis.com/upload/drive/v2/files?uploadType=multipart"
         
     '--- read file
@@ -259,7 +260,7 @@ Function UploadResumable(FileName As String, Optional FileID As String = "") As 
         RaiseEvent StatusChanged("Handshaking with Google Drive APIs...")
         
         .Send (Utf8BytesFromString("{'title': '" & GetFileName(FileName) & "'}"))
-        Debug.Print .ResponseText
+        'Debug.Print .ResponseText
         ' check for error
         If .Status <> 200 Then
             ' check for error type and response to user
@@ -289,7 +290,7 @@ Function UploadResumable(FileName As String, Optional FileID As String = "") As 
 
         'If the upload request is interrupted or if you receive an HTTP 503 Service Unavailable
         'or any other 5xx response from the server, follow the procedure outlined in resume an interrupted upload.
-        Debug.Print .ResponseText
+        'Debug.Print .ResponseText
         If .Status <> 200 Then
             ' check for error type and response to user
             GoTo exitfunction
@@ -403,14 +404,9 @@ Private Sub WaitMe(Obj As Object)
     Loop
 End Sub
 
-Private Sub Tried()
-    Dim d As String
-    'for parsing parametter to query
-    d = "{'q': isRoot=true, 'fields': 'items(id,title,mimeType)}"
-End Sub
-
-Function UploadChunk(FileName As String, Optional FileID As String = "") As Boolean
+Function UploadChunk(FileName As String, Optional FileID As String = "", Optional ParentID As String) As Boolean
     Dim params As String, Xhr As Object, res As String, urls As String, method As String, mimeType As String
+    Dim Meta As String
     ' set up parameter for the upload
     If Token = "" Then Exit Function
     
@@ -428,8 +424,16 @@ Function UploadChunk(FileName As String, Optional FileID As String = "") As Bool
     End If
     ' this will breake parameter into ?uploadtype ... type?fiel=...&item=...
     urls = urls + "?" + params
-    ' set up request header
+    
+    ' Prepare for meta
+    If ParentID <> "" Then
+        Meta = "{'title':'" + GetFileName(FileName) + "','parents':[{'id':'" + ParentID + "'}]}"
+    Else
+        Meta = "{'title': '" & GetFileName(FileName) & "'}"
+    End If
+    ' get mimetype
     mimeType = GetMimeType(FileName)
+    
     Set Xhr = CreateObject("MSXML2.XMLHTTP")
     With Xhr
         .Open method, urls, False
@@ -440,7 +444,7 @@ Function UploadChunk(FileName As String, Optional FileID As String = "") As Bool
         .SetRequestHeader "User-Agent", VbAgent
         
         RaiseEvent StatusChanged(Msg("MSG_REQUESTING_UPLOAD_HANDLE"))
-        .Send (Utf8BytesFromString("{'title': '" & GetFileName(FileName) & "'}"))
+        .Send (Utf8BytesFromString(Meta))
         
         ' check for error
         If .Status <> 200 Then
@@ -449,6 +453,7 @@ Function UploadChunk(FileName As String, Optional FileID As String = "") As Bool
         End If
         
     End With
+    
     'Step 2: Save the resumable session URI
     urls = Xhr.getResponseHeader("Location")
     RaiseEvent StatusChanged(Msg("MSG_UPLOAD_HANDLE_RETRIEVED"))
@@ -544,9 +549,9 @@ Private Function MakeRequest(xhrObject As Object, url As String, _
         Select Case .Status
         Case 308: ' still continuing
             ' Remember the current chunk for later resuming of the upload
-            Debug.Print .getResponseHeader("Range")
+            'Debug.Print .getResponseHeader("Range")
         Case 201, 200: ' finish the file
-            Debug.Print .getAllResponseHeaders
+            'Debug.Print .getAllResponseHeaders
         Case 500, 502, 503, 504: 'may be an error
             ' tell the uploader to retry later
             GoTo ErrProc
