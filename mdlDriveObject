@@ -21,7 +21,7 @@ Private Type FileAttributes
     originalFilename As String
     fileExtension As String
     md5Checksum As String
-    fileSize As Long
+    FileSize As Long
     ownerNames As String
 End Type
 
