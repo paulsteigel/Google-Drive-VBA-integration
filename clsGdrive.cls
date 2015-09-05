@@ -161,7 +161,7 @@ Private Function InsertFile(FileName As String, Optional ByVal bAsync As Boolean
         .SetRequestHeader "Authorization", Token
         .SetRequestHeader "Content-Type", "multipart/related; boundary=""" + Boundary + """"
         .SetRequestHeader "Content-Length", GetFileSize(FileName)
-        .SetRequestHeader "User-Agent", Application.name
+        .SetRequestHeader "User-Agent", VbAgent
         .Send (body)
         If .Status <> 200 Then
             '// Error getting OAuth2 token
@@ -255,7 +255,7 @@ Function UploadResumable(FileName As String, Optional FileID As String = "") As 
         .SetRequestHeader "Authorization:", Token
         .SetRequestHeader "X-Upload-Content-Type", mimeType
         '.Setrequestheader "X-Upload-Content-Length", GetFileSize(FileName)
-        .SetRequestHeader "User-Agent", Application.name
+        .SetRequestHeader "User-Agent", VbAgent
         RaiseEvent StatusChanged("Handshaking with Google Drive APIs...")
         
         .Send (Utf8BytesFromString("{'title': '" & GetFileName(FileName) & "'}"))
@@ -278,7 +278,7 @@ Function UploadResumable(FileName As String, Optional FileID As String = "") As 
         .SetRequestHeader "Authorization:", Token
         .SetRequestHeader "Content-Type", mimeType
         .SetRequestHeader "Content-Length", GetFileSize(FileName)
-        .SetRequestHeader "User-Agent", Application.name
+        .SetRequestHeader "User-Agent", VbAgent
         RaiseEvent StatusChanged("Start sending file...")
         
         .Send (ReadBinaryFile(FileName))
@@ -397,8 +397,8 @@ exitfunction:
     Set Xhr = Nothing
 End Function
 
-Private Sub WaitMe(obj As Object)
-    Do While obj.readyState <> 4
+Private Sub WaitMe(Obj As Object)
+    Do While Obj.readyState <> 4
         DoEvents
     Loop
 End Sub
@@ -437,11 +437,11 @@ Function UploadChunk(FileName As String, Optional FileID As String = "") As Bool
         .SetRequestHeader "Authorization:", Token
         .SetRequestHeader "X-Upload-Content-Type", mimeType
         '.Setrequestheader "X-Upload-Content-Length", GetFileSize(FileName)
-        .SetRequestHeader "User-Agent", Application.name
-        RaiseEvent StatusChanged("Handshaking with Google Drive APIs...")
+        .SetRequestHeader "User-Agent", VbAgent
         
+        RaiseEvent StatusChanged(Msg("MSG_REQUESTING_UPLOAD_HANDLE"))
         .Send (Utf8BytesFromString("{'title': '" & GetFileName(FileName) & "'}"))
-        Debug.Print .ResponseText
+        
         ' check for error
         If .Status <> 200 Then
             ' check for error type and response to user
@@ -451,20 +451,26 @@ Function UploadChunk(FileName As String, Optional FileID As String = "") As Bool
     End With
     'Step 2: Save the resumable session URI
     urls = Xhr.getResponseHeader("Location")
+    RaiseEvent StatusChanged(Msg("MSG_UPLOAD_HANDLE_RETRIEVED"))
     
     'Step 3: Upload the file
-    PostBinaryChunks Xhr, urls, FileName
-    
-    UploadChunk = True
-    Set Xhr = Nothing
+    If PostBinaryChunks(Xhr, urls, FileName) Then
+        ' successfully uploaded all
+        UploadChunk = True
+        RaiseEvent StatusChanged(Replace(Msg("MSG_UPLOAD_DONE_SUCCESSFULL"), "%%", "[" + FileName + "]"))
+    Else
+        ' failed at some point...
+        RaiseEvent StatusChanged(Msg("MSG_UPLOAD_FAILED"))
+    End If
 exitfunction:
     Set Xhr = Nothing
 End Function
 
-Private Sub PostBinaryChunks(xhrObject As Object, url As String, FileName As String, Optional ChunkSize As Long = MAX_CHUNK)
+Private Function PostBinaryChunks(xhrObject As Object, url As String, FileName As String, Optional ChunkSize As Long = MAX_CHUNK) As Boolean
     '// Push 'intChunkSize' chunks to client. When near EOS, Read() will terminate at EOS regardless of being asked to read passed EOS
     Dim objStream As Object, bntCount As Long, uFileSize As Long, uFileMimeType As String
-    Dim totalTrunks As Long
+    Dim totalTrunks As Long, i As Long, RmnByte As Long
+    Const Retries = 5
     Set objStream = CreateObject("ADODB.Stream")
     With objStream
         .Open
@@ -473,18 +479,44 @@ Private Sub PostBinaryChunks(xhrObject As Object, url As String, FileName As Str
         uFileSize = GetFileSize(FileName)
         uFileMimeType = GetMimeType(FileName)
         totalTrunks = (uFileSize / ChunkSize) + 1
+ResumeUpload:
         While Not .EOS
             ' upload in trunk
             DoEvents
             If MakeRequest(xhrObject, url, bntCount * ChunkSize, .Read(ChunkSize), uFileSize, uFileMimeType) Then
-                RaiseEvent StatusChanged("Uploading progress... " & Format(100 * (bntCount + 1) / totalTrunks, "Standard") & "%")
+                RaiseEvent ProgressChange(Format(100 * (bntCount + 1) / totalTrunks, "Standard") & "%")
+            Else
+                ' Failed at some point, now get the remained byte and tried 5 times
+                While i <= Retries
+                    Exponential_backoff
+                    RmnByte = QuerryRemainBytes(xhrObject, url, uFileSize)
+                    If RmnByte > 0 Then
+                        ' good - server on again
+                        objStream.Position = RmnByte + 1
+                        i = Retries
+                        RaiseEvent StatusChanged(Replace(Msg("MSG_RESUME_FAILED_UPLOAD"), "%%", "[" + FileName + "]"))
+                        GoTo ResumeUpload
+                    End If
+                    i = i + 1
+                Wend
+                ' seemed no luck after retrying... tell permanent error
+                RaiseEvent StatusChanged(Replace(Msg("MSG_UPLOAD_CRITICAL_ERROR_ABORTED"), "%%", "[" + FileName + "]"))
+                GoTo ExitProc
             End If
+            ' get return number to re-read
             bntCount = bntCount + 1
         Wend
+        PostBinaryChunks = True
         RaiseEvent StatusChanged("Uploading completed...")
     End With
+ExitProc:
     Set objStream = Nothing
-End Sub
+End Function
+
+Private Function Exponential_backoff()
+    Sleep 1000 + Int(Rnd(1) * 100)
+    'Wait 1 second + random_number_milliseconds and retry the request.
+End Function
 
 Private Function MakeRequest(xhrObject As Object, url As String, _
     start As Long, body As Variant, Optional FileLength As Long, _
@@ -505,23 +537,57 @@ Private Function MakeRequest(xhrObject As Object, url As String, _
         Else
             .SetRequestHeader "Content-Range", "bytes */" & FileLength
         End If
-        .SetRequestHeader "User-Agent", Application.name
+        .SetRequestHeader "User-Agent", VbAgent
         
         .Send (body)
                 
         Select Case .Status
         Case 308: ' still continuing
-            
+            ' Remember the current chunk for later resuming of the upload
+            Debug.Print .getResponseHeader("Range")
         Case 201, 200: ' finish the file
-            
-        Case Else 'may be an error
-            Debug.Print .Status
-            Debug.Print .ResponseText
-            Debug.Print .allresponseheader
+            Debug.Print .getAllResponseHeaders
+        Case 500, 502, 503, 504: 'may be an error
+            ' tell the uploader to retry later
             GoTo ErrProc
         End Select
     End With
     
     MakeRequest = True
+ErrProc:
+End Function
+
+Private Function QuerryRemainBytes(xhrObject As Object, url As String, FileSize As Long) As Long
+    ' This function will query Google to get the remained bytes was not uploaded
+    Dim tmpStr As String
+    'On Error GoTo ErrProc
+    With xhrObject
+        ' Just follow google guide on this
+        'PUT {session_uri} HTTP/1.1
+        'Content-Length: 0
+        'Content-Range: bytes */2000000
+
+        .Open "PUT", url, False
+        .SetRequestHeader "Content-Length", 0
+        .SetRequestHeader "Content-Range", "bytes */" & FileSize
+        .SetRequestHeader "User-Agent", VbAgent
+        .Send
+        
+        'If successfully, following is the returned data
+        'HTTP/1.1 308 Resume Incomplete
+        'Content-Length: 0
+        'Range: 0-42
+        Select Case .Status
+        Case 308: ' still continuing
+            ' Remember the current chunk for later resuming of the upload
+            tmpStr = .getResponseHeader("Range")
+            QuerryRemainBytes = Val(Mid(tmpStr, InStr(tmpStr, "-") + 1))
+        Case 201, 200: ' finish the file
+            
+        Case 500, 502, 503, 504: 'may be an error
+            ' tell the uploader to retry later
+            GoTo ErrProc
+        End Select
+    End With
 ErrProc:
 End Function
